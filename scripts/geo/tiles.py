@@ -3,6 +3,7 @@ import os
 import json
 import math
 import psycopg
+import ee
 from pathlib import Path
 from dataclasses import dataclass
 from shapely.geometry import Polygon, box
@@ -302,6 +303,19 @@ def _get_crs84_tiles(polygon_coords: list[list[float]], zoom: int) -> list[CRS84
                 
     return tiles
 
+
+def _crs84_to_gee_region(tile: CRS84Tile) -> ee.Geometry.Rectangle:
+    """
+    Converts a deserialized CRS84Tile object into a Google Earth Engine
+    computational region (ee.Geometry.Rectangle).
+    """
+    # GEE Rectangle expects bounds in [xmin, ymin, xmax, ymax] order
+    # which maps exactly to [min_lon, min_lat, max_lon, max_lat]
+    return ee.Geometry.Rectangle(
+        coords=[tile.min_lon, tile.min_lat, tile.max_lon, tile.max_lat],
+        proj='EPSG:4326',
+        geodesic=False
+    )
 
 
 def _store_aoi_polygon(conn: psycopg.Connection, polygon_name, polygon_object):
