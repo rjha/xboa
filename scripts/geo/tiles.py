@@ -2,13 +2,13 @@ import logging
 import os 
 import json
 import math
+import psycopg
 from pathlib import Path
 from dataclasses import dataclass
 from shapely.geometry import Polygon, box
 from shapely.geometry.polygon import orient
-
-import psycopg
 from psycopg.errors import UniqueViolation
+
 from softmaxx.config import AppConfig, DatabaseConfig 
 from softmaxx.config import get_logger_config, get_database_config
 
@@ -35,6 +35,24 @@ class PolygonDetail:
     id: int
     name: str
     geometry: str
+
+
+
+@dataclass
+class CRS84Tile:
+    zoom: int
+    lat_index: int
+    lon_index: int
+    # Corner Coordinates
+    min_lon: float
+    min_lat: float
+    max_lon: float
+    max_lat: float
+    # Centroid
+    centroid_lon: float
+    centroid_lat: float
+    # Intersection metrics
+    intersection_fraction: float
 
 
 # Constants for Web Mercator (EPSG:3857) projection math
@@ -80,27 +98,6 @@ def _unpack_map_tile(packed_id: int) -> tuple[int, int, int]:
     return x, y, z
 
 
-def _orient_polygon(coords: list[list[float]]) -> list[list[float]]:
-    """Ensures coordinates are ordered counter-clockwise (positive area)."""
-    if not coords or len(coords) < 3:
-        return coords
-    
-    # Close the ring if it isn't closed
-    if coords[0] != coords[-1]:
-        coords = coords + [coords[0]]
-        
-    # Calculate signed area to check orientation
-    edge_sum = 0.0
-    for i in range(len(coords) - 1):
-        x1, y1 = coords[i][0], coords[i][1] # lon, lat
-        x2, y2 = coords[i+1][0], coords[i+1][1]
-        edge_sum += (x2 - x1) * (y2 + y1)
-        
-    # If edge_sum > 0, it's clockwise. Reverse it to make it CCW.
-    if edge_sum > 0:
-        return coords[::-1]
-    return coords
-
 
 def _get_wgs84_metric_scales(center_lat: float) -> tuple[float, float]:
     """
@@ -125,41 +122,6 @@ def _get_wgs84_metric_scales(center_lat: float) -> tuple[float, float]:
     
     return lat_to_meters, lng_to_meters
 
-
-def _get_polygon_shoe_lace_area(coords: list[list[float]]) -> float:
-    """Calculates true ellipsoidal flat surface area in square meters."""
-    if not coords or len(coords) < 3:
-        return 0.0
-        
-    # Close the ring if needed
-    if coords[0] != coords[-1]:
-        coords = coords + [coords[0]]
-
-    # 1. Compute Centroid/Center Point
-    sum_lng = sum(p[0] for p in coords[:-1])
-    sum_lat = sum(p[1] for p in coords[:-1])
-    n_points = len(coords) - 1
-    
-    center_lng = sum_lng / n_points
-    center_lat = sum_lat / n_points
-    
-    # 2. Get Ellipsoid Scale Modifiers
-    lat_to_meters, lng_to_meters = _get_wgs84_metric_scales(center_lat)
-    
-    # 3. Project to Local Center Meters
-    projected = [
-        ((p[0] - center_lng) * lng_to_meters, (p[1] - center_lat) * lat_to_meters)
-        for p in coords
-    ]
-    
-    # 4. Shoelace Formula
-    area = 0.0
-    num_pts = len(projected)
-    for i in range(num_pts - 1):
-        area += projected[i][0] * projected[i+1][1]
-        area -= projected[i+1][0] * projected[i][1]
-        
-    return abs(area / 2.0)
 
 
 def _local_project_array(coords: list[list[float]], 
@@ -250,6 +212,77 @@ def _get_map_tiles(polygon_coords: list[list[float]], zoom: int) -> list[MapTile
                         )
     return tiles
 
+
+
+def _get_crs84_tiles(polygon_coords: list[list[float]], zoom: int) -> list[CRS84Tile]:
+    """
+    method to find CRS84 tiles that intersect with the supplied polygon at a zoom.
+    We use the CRS84 tile mtarix set (TMS). We draw the spatial grid first and then 
+    find the start and end tiles that enclose the polygon in both longitude and
+    latitude.
+    """
+    # 1. Establish the fixed global grid matrix capacity
+    total_lat_steps = 2**zoom
+    total_lon_steps = 2**(zoom + 1)
+    
+    tile_height_deg = 180.0 / total_lat_steps
+    tile_width_deg = 360.0 / total_lon_steps
+    
+    # 2. Convert input polygon points to a Shapely geometry to get bounds
+    # Shapely expects coordinate pairs as (longitude, latitude) [X, Y]
+    shapely_poly_coords = [(lon, lat) for lat, lon in polygon_coords]
+    target_polygon = Polygon(shapely_poly_coords)
+    target_area = target_polygon.area
+    
+    poly_min_lon, poly_min_lat, poly_max_lon, poly_max_lat = target_polygon.bounds
+    
+    # 3. Direct, drift-free index calculation using global anchors (-180, -90)
+    start_lon_idx = int((poly_min_lon + 180.0) // tile_width_deg)
+    end_lon_idx = int((poly_max_lon + 180.0) // tile_width_deg)
+    
+    start_lat_idx = int((poly_min_lat + 90.0) // tile_height_deg)
+    end_lat_idx = int((poly_max_lat + 90.0) // tile_height_deg)
+    
+    # Clamp to valid matrix boundaries to handle coordinates resting exactly on 180° E or 90° N
+    start_lon_idx, end_lon_idx = max(0, start_lon_idx), min(total_lon_steps - 1, end_lon_idx)
+    start_lat_idx, end_lat_idx = max(0, start_lat_idx), min(total_lat_steps - 1, end_lat_idx)
+
+    # 4. Iterate strictly within the resolved grid spatial window
+    tiles = []
+    
+    for lat_idx in range(start_lat_idx, end_lat_idx + 1):
+        for lon_idx in range(start_lon_idx, end_lon_idx + 1):
+            
+            # Tile bounds are derived directly from the global grid origins
+            tile_min_lon = -180.0 + (lon_idx * tile_width_deg)
+            tile_max_lon = tile_min_lon + tile_width_deg
+            
+            tile_min_lat = -90.0 + (lat_idx * tile_height_deg)
+            tile_max_lat = tile_min_lat + tile_height_deg
+            
+            tile_box = box(tile_min_lon, tile_min_lat, tile_max_lon, tile_max_lat)
+            
+            # 5. Filter for spatial grid cells that intersect the input polygon
+            if target_polygon.intersects(tile_box):
+                intersection_area = target_polygon.intersection(tile_box).area
+                fraction = intersection_area / target_area if target_area > 0 else 0.0
+                
+                c_lon = tile_min_lon + (tile_width_deg / 2.0)
+                c_lat = tile_min_lat + (tile_height_deg / 2.0)
+                tiles.append(CRS84Tile(
+                    zoom=zoom,
+                    lat_index=lat_idx,
+                    lon_index=lon_idx,
+                    min_lon=round(tile_min_lon, 7),
+                    min_lat=round(tile_min_lat, 7),
+                    max_lon=round(tile_max_lon, 7),
+                    max_lat=round(tile_max_lat, 7),
+                    centroid_lon=round(c_lon, 7),
+                    centroid_lat=round(c_lat, 7),
+                    intersection_fraction=round(fraction, 4)
+                ))
+                
+    return tiles
 
 
 def _store_aoi_polygon(conn: psycopg.Connection, polygon_name, polygon_object):
