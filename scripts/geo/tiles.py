@@ -234,6 +234,7 @@ def _get_map_tiles(polygon_coords: list[list[float]], zoom: int) -> list[MapTile
 def _get_crs84_tiles(polygon_coords: list[list[float]], zoom: int) -> list[CRS84Tile]:
     """
     method to find CRS84 tiles that intersect with the supplied polygon at a zoom.
+    The polygon coordinates are expected in [longitude, latitude] format
     We use the CRS84 tile mtarix set (TMS). We draw the spatial grid first and then 
     find the start and end tiles that enclose the polygon in both longitude and
     latitude.
@@ -247,7 +248,7 @@ def _get_crs84_tiles(polygon_coords: list[list[float]], zoom: int) -> list[CRS84
     
     # 2. Convert input polygon points to a Shapely geometry to get bounds
     # Shapely expects coordinate pairs as (longitude, latitude) [X, Y]
-    shapely_poly_coords = [(lon, lat) for lat, lon in polygon_coords]
+    shapely_poly_coords = [(lat, lon) for lat, lon in polygon_coords]
     target_polygon = Polygon(shapely_poly_coords)
     target_area = target_polygon.area
     
@@ -300,6 +301,7 @@ def _get_crs84_tiles(polygon_coords: list[list[float]], zoom: int) -> list[CRS84
                 ))
                 
     return tiles
+
 
 
 def _store_aoi_polygon(conn: psycopg.Connection, polygon_name, polygon_object):
