@@ -14,7 +14,7 @@ logger = logging.getLogger("main." + __name__)
 
 
 @dataclass(frozen=True)
-class GeoTile:
+class MapTile:
     x: int
     y: int
     z: int
@@ -39,7 +39,7 @@ class PolygonDetail:
 # ORIGIN_SHIFT = math.pi * EARTH_RADIUS  # ~20037508.34 meters
 
 
-def _pack_tile_id(x: int, y: int, z: int) -> int:
+def _pack_map_tile(x: int, y: int, z: int) -> int:
     """Packs X, Y, and Z tile coordinates into a single 64-bit integer ID.
 
     Bit-Packing layout allocation:
@@ -60,7 +60,7 @@ def _pack_tile_id(x: int, y: int, z: int) -> int:
     return packed_id
 
 
-def _unpack_tile_id(packed_id: int) -> tuple[int, int, int]:
+def _unpack_map_tile(packed_id: int) -> tuple[int, int, int]:
     """Decodes a 64-bit packed integer back into its original X, Y, and Z tile coordinates.
     
     Bit-Packing layout mapping:
@@ -77,7 +77,7 @@ def _unpack_tile_id(packed_id: int) -> tuple[int, int, int]:
     return x, y, z
 
 
-def rewind_polygon(coords: list[list[float]]) -> list[list[float]]:
+def _orient_polygon(coords: list[list[float]]) -> list[list[float]]:
     """Ensures coordinates are ordered counter-clockwise (positive area)."""
     if not coords or len(coords) < 3:
         return coords
@@ -123,7 +123,7 @@ def _get_wgs84_metric_scales(center_lat: float) -> tuple[float, float]:
     return lat_to_meters, lng_to_meters
 
 
-def calculate_planar_convex_area(coords: list[list[float]]) -> float:
+def _get_polygon_shoe_lace_area(coords: list[list[float]]) -> float:
     """Calculates true ellipsoidal flat surface area in square meters."""
     if not coords or len(coords) < 3:
         return 0.0
@@ -163,18 +163,22 @@ def _local_project_array(coords: list[list[float]],
                          c_lng: float, 
                          c_lat: float, 
                          lat_to_meters: float, lng_to_meters: float) -> list[tuple[float, float]]:
-    
-    """Maps a naked coordinate array to localized meters relative to a tile origin."""
+    """
+    This function takes a set of global geographic coordinates (Latitude/Longitude) 
+    and flattens them into a simple, local 2D plane measured in physical meters.
+    By converting the complex polygon and grid tile into this temporary, flat metric 
+    canvas, Shapely can accurately compute intersection areas using true meters.
+    """
     return [
         ((lon - c_lng) * lng_to_meters, (lat - c_lat) * lat_to_meters)
         for lon, lat in coords
     ]
 
 
-def _get_intersecting_tiles(polygon_coords: list[list[float]], zoom: int) -> list:
+def _get_map_tiles(polygon_coords: list[list[float]], zoom: int) -> list[MapTile]:
     """Finds intersecting tiles and calculates area fractions using raw array mathematics."""
     # Ensure winding order is safe and closed
-    polygon_coords = rewind_polygon(polygon_coords)
+    polygon_coords = _orient_polygon(polygon_coords)
     
     # 1. Manually calculate degree bounding box from list
     longitudes = [p[0] for p in polygon_coords]
@@ -234,9 +238,9 @@ def _get_intersecting_tiles(polygon_coords: list[list[float]], zoom: int) -> lis
                     area_fraction = round(area_fraction, 4)
 
                     if area_fraction > 0.0001:
-                        packed_id = _pack_tile_id(int(x), int(y), int(zoom))
+                        packed_id = _pack_map_tile(int(x), int(y), int(zoom))
                         tiles.append(
-                            GeoTile(x=int(x), y=int(y), z=int(zoom), 
+                            MapTile(x=int(x), y=int(y), z=int(zoom), 
                                     area_fraction=area_fraction, packed_id=packed_id)
                         )
     return tiles
@@ -289,7 +293,7 @@ def _create_polygon_computation(conn: psycopg.Connection, polygon_id, computatio
             raise e
 
 
-def _create_geo_tile(conn: psycopg.Connection, tile: GeoTile) -> int:
+def _create_geo_tile(conn: psycopg.Connection, tile: MapTile) -> int:
     """Finds or creates a tile in the geo_tiles table. """
 
     with conn.cursor() as cur:
@@ -417,7 +421,7 @@ def link_computation_to_aoi(computation_name: str, aoi_name: str) -> int:
             raw_coordinates = polygon_detail.geometry["coordinates"]
             aoi_coordinates = raw_coordinates[0]
             logger.info(f"AOI polygon coordinates are {aoi_coordinates}")
-            aoi_tiles = _get_intersecting_tiles(aoi_coordinates, computation_detail.zoom_level)
+            aoi_tiles = _get_map_tiles(aoi_coordinates, computation_detail.zoom_level)
 
             for tile in aoi_tiles:
                 logger.info(f"insert tile x: {tile.x}, y:{tile.y}, {tile.z}")
@@ -501,7 +505,7 @@ def show_polygon_tiles(polygon_file, zoom_level):
 
     raw_coordinates = geometry["coordinates"]
     coordinates = raw_coordinates[0]
-    tiles = _get_intersecting_tiles(coordinates, zoom_level)
+    tiles = _get_map_tiles(coordinates, zoom_level)
     for tile in tiles:
         print(f"x: {tile.x}, y: {tile.y}, z: {tile.z}, fraction: {tile.area_fraction}, packed_id:{tile.packed_id}")
 
