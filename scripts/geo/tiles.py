@@ -23,6 +23,13 @@ class MapTile:
     z: int
     packed_id: int
     area_fraction: float
+    def __str__(self) -> str:
+        """Returns a scannable, human-readable summary of the tile."""
+        return (
+            f"MapTile [Z={self.z}, X={self.x}, Y={self.y}]"
+            f",Overlap: {self.area_fraction * 100:.2f}%"
+            f",Packed ID: {self.packed_id}"
+        )
 
 @dataclass(frozen=True)
 class ComputationDetail:
@@ -53,6 +60,16 @@ class CRS84Tile:
     centroid_lat: float
     # Intersection metrics
     intersection_fraction: float
+
+    def __str__(self) -> str:
+        """Returns a scannable, human-readable summary of the tile."""
+        return (
+            f"CRS84Tile [Z={self.zoom}, LatIdx={self.lat_index}, LonIdx={self.lon_index}]\n"
+            f"  Bounds  : Lon({self.min_lon} to {self.max_lon}), Lat({self.min_lat} to {self.max_lat})\n"
+            f"  Centroid: ({self.centroid_lon}, {self.centroid_lat})\n"
+            f"  Overlap : {self.intersection_fraction * 100:.2f}%"
+        )
+    
 
 
 # Constants for Web Mercator (EPSG:3857) projection math
@@ -544,12 +561,11 @@ def show_polygon_tiles(polygon_file, zoom_level):
 
     raw_coordinates = geometry["coordinates"]
     coordinates = raw_coordinates[0]
-    tiles = _get_map_tiles(coordinates, zoom_level)
+    tiles = _get_crs84_tiles(coordinates, zoom_level)
     for tile in tiles:
-        print(f"x: {tile.x}, y: {tile.y}, z: {tile.z}, fraction: {tile.area_fraction}, packed_id:{tile.packed_id}")
+        print(tile)
 
     
-
 def start_worker():
     print(f"start geo polygon process under PID: {os.getpid()}...")
     AppConfig.load()
