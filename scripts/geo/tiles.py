@@ -4,6 +4,9 @@ import json
 import math
 from pathlib import Path
 from dataclasses import dataclass
+from shapely.geometry import Polygon, box
+from shapely.geometry.polygon import orient
+
 import psycopg
 from psycopg.errors import UniqueViolation
 from softmaxx.config import AppConfig, DatabaseConfig 
@@ -175,16 +178,22 @@ def _local_project_array(coords: list[list[float]],
     ]
 
 
+
 def _get_map_tiles(polygon_coords: list[list[float]], zoom: int) -> list[MapTile]:
     """Finds intersecting tiles and calculates area fractions using raw array mathematics."""
-    # Ensure winding order is safe and closed
-    polygon_coords = _orient_polygon(polygon_coords)
+    # 1. Instantiate the raw Shapely polygon
+    # Note: Shapely expects coordinate pairs as (longitude, latitude) [X, Y]
+    raw_polygon = Polygon(polygon_coords)
     
-    # 1. Manually calculate degree bounding box from list
-    longitudes = [p[0] for p in polygon_coords]
-    latitudes = [p[1] for p in polygon_coords]
-    min_lng, max_lng = min(longitudes), max(longitudes)
-    min_lat, max_lat = min(latitudes), max(latitudes)
+    # 2. Enforce Counter-Clockwise (CCW) orientation using native orient
+    target_polygon = orient(raw_polygon, sign=1.0)
+    
+    # 3. Extract degree bounding box directly from the corrected shape bounds
+    min_lng, min_lat, max_lng, max_lat = target_polygon.bounds
+    
+    # Extract the freshly oriented coordinate array to pass to your local projector
+    # .exterior.coords outputs tuples, convert back to list[list[float]] to match your signature
+    corrected_coords = [list(pt) for pt in target_polygon.exterior.coords]
 
     # Standard tile conversion equations
     def lon2tile(lon, z): return math.floor((lon + 180) / 360 * (2 ** z))
@@ -204,10 +213,6 @@ def _get_map_tiles(polygon_coords: list[list[float]], zoom: int) -> list[MapTile
     
     tiles = []
 
-    # Shapely polygon object from your input array for fast geospatial topology checks
-    from shapely.geometry import box, Polygon
-    poly_shape_wgs84 = Polygon(polygon_coords)
-
     for x in range(x_min, x_max + 1):
         for y in range(y_min, y_max + 1):
             w, e = tile2lon(x, zoom), tile2lon(x + 1, zoom)
@@ -217,7 +222,7 @@ def _get_map_tiles(polygon_coords: list[list[float]], zoom: int) -> list[MapTile
             tile_box_wgs84 = box(min(w, e), min(s, n), max(w, e), max(s, n))
 
             # Fast bounding intersection check
-            if poly_shape_wgs84.intersects(tile_box_wgs84):
+            if target_polygon.intersects(tile_box_wgs84):
                 c_lng = (w + e) / 2.0
                 c_lat = (s + n) / 2.0
 
@@ -226,9 +231,9 @@ def _get_map_tiles(polygon_coords: list[list[float]], zoom: int) -> list[MapTile
                 # Project the tile corner geometry array using your math
                 tile_array_wgs84 = [[w, n], [e, n], [e, s], [w, s], [w, n]]
                 
-                # Transform arrays to native Shapely meters shapes
+                # Transform arrays to native Shapely meters shapes using corrected_coords
                 local_tile_shape = Polygon(_local_project_array(tile_array_wgs84, c_lng, c_lat, lat_to_meters, lng_to_meters))
-                local_poly_shape = Polygon(_local_project_array(polygon_coords, c_lng, c_lat, lat_to_meters, lng_to_meters))
+                local_poly_shape = Polygon(_local_project_array(corrected_coords, c_lng, c_lat, lat_to_meters, lng_to_meters))
 
                 # Compute the area intersection subset
                 intersection_geom = local_poly_shape.intersection(local_tile_shape)
@@ -244,6 +249,7 @@ def _get_map_tiles(polygon_coords: list[list[float]], zoom: int) -> list[MapTile
                                     area_fraction=area_fraction, packed_id=packed_id)
                         )
     return tiles
+
 
 
 def _store_aoi_polygon(conn: psycopg.Connection, polygon_name, polygon_object):
