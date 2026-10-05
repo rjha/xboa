@@ -144,18 +144,16 @@ def _wgs84_meters_per_degree(lat_degree:float)-> tuple[float, float]:
 
 
 
-def _local_project_array(coords: list[list[float]], 
+def _project_polygon_to_meter(coords: list[list[float]], 
                          c_lng: float, 
                          c_lat: float, 
-                         lat_to_meters: float, lng_to_meters: float) -> list[tuple[float, float]]:
+                         meters_per_deg_lat: float, meters_per_deg_lon: float) -> list[tuple[float, float]]:
     """
-    This function takes a set of global geographic coordinates (Latitude/Longitude) 
-    and flattens them into a simple, local 2D plane measured in physical meters.
-    By converting the complex polygon and grid tile into this temporary, flat metric 
-    canvas, Shapely can accurately compute intersection areas using true meters.
+    This function takes a polygon, a set of global geographic coordinates (LAT/LON) 
+    and projects them into a local 2D plane measured in physical meters. 
     """
     return [
-        ((lon - c_lng) * lng_to_meters, (lat - c_lat) * lat_to_meters)
+        ((lon - c_lng) * meters_per_deg_lat, (lat - c_lat) * meters_per_deg_lon)
         for lon, lat in coords
     ]
 
@@ -214,8 +212,8 @@ def _get_map_tiles(polygon_coords: list[list[float]], zoom: int) -> list[MapTile
                 tile_array_wgs84 = [[w, n], [e, n], [e, s], [w, s], [w, n]]
                 
                 # Transform arrays to native Shapely meters shapes using corrected_coords
-                local_tile_shape = Polygon(_local_project_array(tile_array_wgs84, c_lng, c_lat, meters_per_deg_lat, meters_per_deg_lon))
-                local_poly_shape = Polygon(_local_project_array(corrected_coords, c_lng, c_lat, meters_per_deg_lat, meters_per_deg_lon))
+                local_tile_shape = Polygon(_project_polygon_to_meter(tile_array_wgs84, c_lng, c_lat, meters_per_deg_lat, meters_per_deg_lon))
+                local_poly_shape = Polygon(_project_polygon_to_meter(corrected_coords, c_lng, c_lat, meters_per_deg_lat, meters_per_deg_lon))
 
                 # Compute the area intersection subset
                 intersection_geom = local_poly_shape.intersection(local_tile_shape)
