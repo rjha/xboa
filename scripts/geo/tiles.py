@@ -240,54 +240,56 @@ def _get_crs84_tiles(polygon_coords: list[list[float]], zoom: int) -> list[CRS84
     find the start and end tiles that enclose the polygon in both longitude and
     latitude.
     """
-    # 1. Establish the fixed global grid matrix capacity
+    # Fix Grid steps at this zoom
     total_lat_steps = 2**zoom
     total_lon_steps = 2**(zoom + 1)
-    
+
+    # Since the fraction has powers of 2 in the Denominator, 
+    # we should get a terminating decimal (how to check that?)
     tile_height_deg = 180.0 / total_lat_steps
     tile_width_deg = 360.0 / total_lon_steps
     
-    # 2. Convert input polygon points to a Shapely geometry to get bounds
-    # Shapely expects coordinate pairs as (longitude, latitude) [X, Y]
-    shapely_poly_coords = [(lat, lon) for lat, lon in polygon_coords]
+    # Shapely expects coordinate pairs as (longitude, latitude)
+    # Unpack our polygon into shapely[X,Y]
+    shapely_poly_coords = [(lon, lat) for lon, lat in polygon_coords]
     target_polygon = Polygon(shapely_poly_coords)
-    target_area = target_polygon.area
+    # target_area = target_polygon.area
     
-    poly_min_lon, poly_min_lat, poly_max_lon, poly_max_lat = target_polygon.bounds
+    p_min_lon, p_min_lat, p_max_lon, p_max_lat = target_polygon.bounds
+    # @todo raise errors if polygon is out of bounds 
+
+    # Direct index calculation, zero of longitude is at -180 
+    # The zero of latitude is at 90N (+90)
+    start_lon_idx = int((p_min_lon + 180.0) // tile_width_deg)
+    end_lon_idx = int((p_max_lon + 180.0) // tile_width_deg)
     
-    # 3. Direct, drift-free index calculation using global anchors (-180, -90)
-    start_lon_idx = int((poly_min_lon + 180.0) // tile_width_deg)
-    end_lon_idx = int((poly_max_lon + 180.0) // tile_width_deg)
+    start_lat_idx = int((90.0 - p_max_lat) // tile_height_deg)
+    end_lat_idx = int((90.0 - p_min_lat) // tile_height_deg)
     
-    start_lat_idx = int((poly_min_lat + 90.0) // tile_height_deg)
-    end_lat_idx = int((poly_max_lat + 90.0) // tile_height_deg)
-    
-    # Clamp to valid matrix boundaries to handle coordinates resting exactly on 180° E or 90° N
+    # @todo handle edge cases
     start_lon_idx, end_lon_idx = max(0, start_lon_idx), min(total_lon_steps - 1, end_lon_idx)
     start_lat_idx, end_lat_idx = max(0, start_lat_idx), min(total_lat_steps - 1, end_lat_idx)
 
-    # 4. Iterate strictly within the resolved grid spatial window
     tiles = []
-    
+
+    # Iterate strictly within the resolved grid spatial window
     for lat_idx in range(start_lat_idx, end_lat_idx + 1):
+        tile_max_lat = 90.0 - (lat_idx * tile_height_deg)
+        tile_min_lat = tile_max_lat - tile_height_deg
+
         for lon_idx in range(start_lon_idx, end_lon_idx + 1):
-            
-            # Tile bounds are derived directly from the global grid origins
             tile_min_lon = -180.0 + (lon_idx * tile_width_deg)
             tile_max_lon = tile_min_lon + tile_width_deg
             
-            tile_min_lat = -90.0 + (lat_idx * tile_height_deg)
-            tile_max_lat = tile_min_lat + tile_height_deg
-            
             tile_box = box(tile_min_lon, tile_min_lat, tile_max_lon, tile_max_lat)
-            
-            # 5. Filter for spatial grid cells that intersect the input polygon
             if target_polygon.intersects(tile_box):
                 intersection_area = target_polygon.intersection(tile_box).area
-                fraction = intersection_area / target_area if target_area > 0 else 0.0
+                tile_area = tile_box.area
+                fraction = intersection_area / tile_area if tile_area > 0 else 0.0
                 
                 c_lon = tile_min_lon + (tile_width_deg / 2.0)
                 c_lat = tile_min_lat + (tile_height_deg / 2.0)
+
                 tiles.append(CRS84Tile(
                     zoom=zoom,
                     lat_index=lat_idx,
