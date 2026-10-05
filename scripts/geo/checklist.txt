@@ -1,0 +1,38 @@
+
+Your Finalized Testing Checklist:
+1. Check for Meridian/Antimeridian longitude crossing [cite: 0.6.16].
+2. Check for polygons with holes and MultiPolygons [cite: 0.6.2].
+3. Orient or rewind the polygon (Enforce CCW) [cite: 0.6.10].
+4. Enforce strict geometric validity checks (Self-intersections, bow-ties) and fail fast [cite: 0.6.2].
+5. Standardize axis order parsing (Lon/Lat enforcement).
+6. Clamp latitudes to the Web Mercator absolute boundaries  - less than 85 degrees 
+7. Ensure no memory overflows for large polygons (Generator streaming).
+8. Handle edge cases when a polygon sits exactly on a tile seam boundary (Upper index containment).
+9. Handle microscopic precision slivers (Filtering zero-area intersections).
+10. Isolate MultiPolygon sub-bounds to prevent looping through vast empty spaces.
+11. Optimize calculation at higher zooms to prevent \(O(N^2)\) brute-force search grids (Scanline/STRtree mapping).
+
+
+GeoJSON uses [Longitude, Latitude] [cite: 0.6.15], 
+while many legacy geographic databases, shapes, and formats output [Latitude, Longitude]
+
+
+If the source file contains a MultiPolygon (disjointed islands, or a polygon split by 
+the Antimeridian) [cite: 0.6.2], the bounding box (.bounds) calculated will cover 
+the entire space between the elements
+
+For two small islands on opposite ends of a country, a single bounding box will force the 
+loop to iterate through thousands of empty tiles sitting in the ocean between them. 
+The engine must check the bounding box of each sub-polygon independently rather than 
+using the global MultiPolygon bounds
+
+
+checking intersections can produce microscopic fractions (e.g., 0.000000001 area overlap). 
+Your loop must explicitly define a microscopic tolerance threshold (e.g., ignoring 
+intersections where fraction < 0.0001) to prevent returning empty "ghost" tiles
+
+
+Upstream datasets frequently contain invalid shapes, such as "bow-tie" self-intersections 
+(where a polygon crosses its own edge). Do not run calculations on arbitrary shapes.
+
+
