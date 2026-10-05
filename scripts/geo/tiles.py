@@ -5,6 +5,8 @@ import math
 import psycopg
 import ee
 from pathlib import Path
+from typing import Callable, Any
+from enum import Enum
 from dataclasses import dataclass
 from shapely.geometry import Polygon, box
 from shapely.geometry.polygon import orient
@@ -36,8 +38,6 @@ class WebMapTile:
             f"C=[{self.centroid_lon:.5f}, {self.centroid_lat:.5f}])"
         )
     
-
-
 @dataclass
 class CRS84Tile:
     zoom: int
@@ -76,7 +76,10 @@ class PolygonDetail:
     name: str
     geometry: str
 
-
+class TileMatrix(Enum):
+    WEB_MAP = "WEB_MAP"
+    LOCAL = "LOCAL"
+    CRS84 = "CRS84"
 
 # Constants for Web Mercator (EPSG:3857) projection math
 # EARTH_RADIUS = 6378137.0
@@ -702,12 +705,14 @@ def add_aoi_polygon(aoi_name, polygon_file):
             logger.info("A polygon with the name {0} already exists!".format(aoi_name))
 
 
-def show_polygon_tiles(polygon_file, zoom_level):
+def get_polygon_intersection_tiles(
+        polygon_file: str, 
+        zoom_level: int, 
+        tile_matrix: TileMatrix = TileMatrix.WEB_MAP
+        ) -> Any :
     """
-    Get a polygon or MultiPolygon points in a file
-    The method prints the x,y,z tiles at supplied zoom levels 
-    along with intersection of polygon and tile as a fraction 
-    of tile area. 
+    This method returns the tiles for a tile matrix set at given zoom level.  
+    The polygon is read from a file.
     """
     file_path = Path(polygon_file)
     if not file_path.exists() or not file_path.is_file():
@@ -724,11 +729,16 @@ def show_polygon_tiles(polygon_file, zoom_level):
 
     raw_coordinates = geometry["coordinates"]
     coordinates = raw_coordinates[0]
-    tiles = _get_web_map_tiles(coordinates, zoom_level)
-    for tile in tiles:
-        print(tile)
+    if tile_matrix == TileMatrix.WEB_MAP:
+        return _get_web_map_tiles(coordinates, zoom=zoom_level)
+    elif tile_matrix == TileMatrix.CRS84:
+        return _get_crs84_tiles(coordinates, zoom=zoom_level)
+    elif tile_matrix == TileMatrix.LOCAL:
+        return _get_local_tiles(coordinates, zoom=zoom_level)
+    else:
+        raise ValueError(f"Unsupported tile matrix set: {tile_matrix}")
 
-    
+
 def start_worker():
     print(f"start geo polygon process under PID: {os.getpid()}...")
     AppConfig.load()
@@ -736,7 +746,10 @@ def start_worker():
     AppConfig.init_logging(log_file=log_config.log_file, log_level=log_config.log_level)
     
     logger.info(f"xboa sdk config loaded...")
-    show_polygon_tiles("polygon.json", 14)
+    tiles: list[WebMapTile]= get_polygon_intersection_tiles("polygon.json", 14, tile_matrix=TileMatrix.CRS84)
+    for tile in tiles:
+        print(tile)
+
     # add_aoi_polygon("bihta_block", "polygon.json")
     # add_computation("RAIN", 10)
     # link_computation_to_aoi("RAIN", "bihta_block")
