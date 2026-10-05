@@ -116,29 +116,31 @@ def _unpack_map_tile(packed_id: int) -> tuple[int, int, int]:
     return x, y, z
 
 
-
-def _get_wgs84_metric_scales(center_lat: float) -> tuple[float, float]:
+def _wgs84_meters_per_degree(lat_degree:float)-> tuple[float, float]:
     """
-    Replicates your JS getGlobalMetricScales using standard WGS-84 
-    Ellipsoid constants to find exact meters per degree of Lat and Lon.
+    Calculates the meters per degree scale at one exact coordinate using 
+    differential calculus. The key point is that the calculation is fine for 
+    a particular coordinate but will introduce errors for large tiles (lower zooms). 
+
+    The idea that meters per degree is same for all points of a tile works for small 
+    tiles (higher zooms)
     """
-    lat_rad = math.radians(center_lat)
+    lat_radians = math.radians(lat_degree)
+
+    a = 6378137.0         # semi-major axis (equatorial radius)
+    b = 6356752.314245    # semi-minor axis (polar radius)
+    e_sq = 1 - (b**2 / a**2) # Eccentricity squared
     
-    a = 6378137.0                # Equatorial radius in meters
-    b = 6356752.314245           # Polar radius in meters
-    e_sq = 1 - (b * b) / (a * a) # Square of eccentricity
-
-    # Calculate radius of curvature along the meridian (North-South)
-    denominator = (1 - e_sq * (math.sin(lat_rad) ** 2)) ** 1.5
-    m = (a * (1 - e_sq)) / denominator
-
-    # Calculate radius of curvature along the prime vertical (East-West)
-    n = a / math.sqrt(1 - e_sq * (math.sin(lat_rad) ** 2))
-
-    lat_to_meters = (math.pi / 180.0) * m
-    lng_to_meters = (math.pi / 180.0) * n * math.cos(lat_rad)
+    # Radius of curvature along the meridian (North-South)
+    M = (a * (1 - e_sq)) / ((1 - e_sq * math.sin(lat_radians)**2)**1.5)
     
-    return lat_to_meters, lng_to_meters
+    # Radius of curvature along the prime vertical (East-West)
+    N = a / math.sqrt(1 - e_sq * math.sin(lat_radians)**2)
+    
+    # Convert radian arc length to 1 degree
+    meters_per_deg_lat = M * math.radians(1)
+    meters_per_deg_lon = N * math.cos(lat_radians) * math.radians(1)
+    return meters_per_deg_lat, meters_per_deg_lon
 
 
 
@@ -206,14 +208,14 @@ def _get_map_tiles(polygon_coords: list[list[float]], zoom: int) -> list[MapTile
                 c_lng = (w + e) / 2.0
                 c_lat = (s + n) / 2.0
 
-                lat_to_meters, lng_to_meters = _get_wgs84_metric_scales(c_lat)
+                meters_per_deg_lat, meters_per_deg_lon = _wgs84_meters_per_degree(c_lat)
 
                 # Project the tile corner geometry array using your math
                 tile_array_wgs84 = [[w, n], [e, n], [e, s], [w, s], [w, n]]
                 
                 # Transform arrays to native Shapely meters shapes using corrected_coords
-                local_tile_shape = Polygon(_local_project_array(tile_array_wgs84, c_lng, c_lat, lat_to_meters, lng_to_meters))
-                local_poly_shape = Polygon(_local_project_array(corrected_coords, c_lng, c_lat, lat_to_meters, lng_to_meters))
+                local_tile_shape = Polygon(_local_project_array(tile_array_wgs84, c_lng, c_lat, meters_per_deg_lat, meters_per_deg_lon))
+                local_poly_shape = Polygon(_local_project_array(corrected_coords, c_lng, c_lat, meters_per_deg_lat, meters_per_deg_lon))
 
                 # Compute the area intersection subset
                 intersection_geom = local_poly_shape.intersection(local_tile_shape)
@@ -587,6 +589,7 @@ def start_worker():
     AppConfig.load()
     log_config = get_logger_config("local")
     AppConfig.init_logging(log_file=log_config.log_file, log_level=log_config.log_level)
+    
     logger.info(f"xboa sdk config loaded...")
     show_polygon_tiles("polygon.json", 14)
     # add_aoi_polygon("bihta_block", "polygon.json")
