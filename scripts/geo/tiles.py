@@ -18,32 +18,24 @@ logger = logging.getLogger("main." + __name__)
 
 
 @dataclass(frozen=True)
-class MapTile:
-    x: int
-    y: int
-    z: int
-    packed_id: int
-    area_fraction: float
+class WebMapTile:
+    zoom: int
+    x_index: int
+    y_index: int
+    min_lon: float
+    min_lat: float
+    max_lon: float
+    max_lat: float
+    centroid_lon: float
+    centroid_lat: float
+    intersection_fraction: float
     def __str__(self) -> str:
-        """Returns a scannable, human-readable summary of the tile."""
         return (
-            f"MapTile [Z={self.z}, X={self.x}, Y={self.y}]"
-            f",Overlap: {self.area_fraction * 100:.2f}%"
-            f",Packed ID: {self.packed_id}"
+            f"MapTile(Z={self.zoom}, X={self.x_index}, Y={self.y_index}, "
+            f"f={self.intersection_fraction * 100:.1f}%, "
+            f"C=[{self.centroid_lon:.5f}, {self.centroid_lat:.5f}])"
         )
-
-@dataclass(frozen=True)
-class ComputationDetail:
-    id: int
-    name: str
-    zoom_level: int
-
-@dataclass(frozen=True)
-class PolygonDetail:
-    id: int
-    name: str
-    geometry: str
-
+    
 
 
 @dataclass
@@ -71,6 +63,19 @@ class CRS84Tile:
             f"  Overlap : {self.intersection_fraction * 100:.2f}%"
         )
     
+
+@dataclass(frozen=True)
+class ComputationDetail:
+    id: int
+    name: str
+    zoom_level: int
+
+@dataclass(frozen=True)
+class PolygonDetail:
+    id: int
+    name: str
+    geometry: str
+
 
 
 # Constants for Web Mercator (EPSG:3857) projection math
@@ -159,7 +164,7 @@ def _project_polygon_to_meter(coords: list[list[float]],
 
 
 
-def _get_map_tiles(polygon_coords: list[list[float]], zoom: int) -> list[MapTile]:
+def _get_local_tiles(polygon_coords: list[list[float]], zoom: int) -> list[WebMapTile]:
     """Finds intersecting tiles and calculates area fractions using raw array mathematics."""
     # 1. Instantiate the raw Shapely polygon
     # Note: Shapely expects coordinate pairs as (longitude, latitude) [X, Y]
@@ -167,6 +172,12 @@ def _get_map_tiles(polygon_coords: list[list[float]], zoom: int) -> list[MapTile
     
     # 2. Enforce Counter-Clockwise (CCW) orientation using native orient
     target_polygon = orient(raw_polygon, sign=1.0)
+    # Fail fast if the polygon geometry is structurally invalid
+    if not target_polygon.is_valid:
+        raise ValueError(
+            "The provided polygon is topologically invalid (e.g., contains "
+            "self-intersections, spikes, or open rings)."
+        )
     
     # 3. Extract degree bounding box directly from the corrected shape bounds
     min_lng, min_lat, max_lng, max_lat = target_polygon.bounds
@@ -224,10 +235,18 @@ def _get_map_tiles(polygon_coords: list[list[float]], zoom: int) -> list[MapTile
 
                     if area_fraction > 0.0001:
                         packed_id = _pack_map_tile(int(x), int(y), int(zoom))
-                        tiles.append(
-                            MapTile(x=int(x), y=int(y), z=int(zoom), 
-                                    area_fraction=area_fraction, packed_id=packed_id)
-                        )
+                        tiles.append(WebMapTile(
+                            x_index=int(x), 
+                            y_index=int(y), 
+                            zoom=int(zoom), 
+                            min_lon=round(w, 7),
+                            min_lat=round(s, 7),
+                            max_lon=round(e, 7),
+                            max_lat=round(n, 7),
+                            centroid_lon=round(c_lng, 7),
+                            centroid_lat=round(c_lat, 7),
+                            intersection_fraction=area_fraction
+                        ))
     return tiles
 
 
@@ -252,8 +271,15 @@ def _get_crs84_tiles(polygon_coords: list[list[float]], zoom: int) -> list[CRS84
     # Shapely expects coordinate pairs as (longitude, latitude)
     # Unpack our polygon into shapely[X,Y]
     shapely_poly_coords = [(lon, lat) for lon, lat in polygon_coords]
-    target_polygon = Polygon(shapely_poly_coords)
-    # target_area = target_polygon.area
+    raw_polygon =  Polygon(shapely_poly_coords)
+    target_polygon = orient(raw_polygon, sign=1.0)
+
+    # Fail fast if the polygon geometry is structurally invalid
+    if not target_polygon.is_valid:
+        raise ValueError(
+            "The provided polygon is topologically invalid (e.g., contains "
+            "self-intersections, spikes, or open rings)."
+        )
     
     p_min_lon, p_min_lat, p_max_lon, p_max_lat = target_polygon.bounds
     # @todo raise errors if polygon is out of bounds 
@@ -298,6 +324,125 @@ def _get_crs84_tiles(polygon_coords: list[list[float]], zoom: int) -> list[CRS84
                     min_lat=round(tile_min_lat, 7),
                     max_lon=round(tile_max_lon, 7),
                     max_lat=round(tile_max_lat, 7),
+                    centroid_lon=round(c_lon, 7),
+                    centroid_lat=round(c_lat, 7),
+                    intersection_fraction=round(fraction, 4)
+                ))
+                
+    return tiles
+
+
+
+def _wgs84_to_epsg3857(lon: float, lat: float) -> tuple[float, float]:
+    """
+    Transforms WGS84 coordinates (degrees) to native EPSG:3857 Web Mercator meters.
+    Fails explicitly if coordinates escape physical global limits.
+    """
+    if not (-180.0 <= lon <= 180.0):
+        raise ValueError(f"Longitude out of bounds [-180, 180]: {lon}")
+    # Web Mercator cuts off mathematically at roughly 85.051129° N/S
+    if not (-85.051129 <= lat <= 85.051129):
+        raise ValueError(f"Latitude out of bounds for EPSG:3857 [-85.051129, 85.051129]: {lat}")
+
+    R = 6378137.0  # WGS84 equatorial radius in meters
+    x = R * math.radians(lon)
+    y = R * math.log(math.tan(math.pi / 4.0 + math.radians(lat) / 2.0))
+    return x, y
+
+def _epsg3857_to_wgs84(x: float, y: float) -> tuple[float, float]:
+    """
+    Transforms native EPSG:3857 Web Mercator meters back to WGS84 degrees.
+    Used to resolve precise geographic bounds for tile objects.
+    """
+    R = 6378137.0
+    lon = math.degrees(x / R)
+    lat = math.degrees(2.0 * math.atan(math.exp(y / R)) - math.pi / 2.0)
+    return lon, lat
+
+
+def _get_web_map_tiles(polygon_coords: list[list[float]], zoom: int) -> list[WebMapTile]:
+    """
+    Calculates exact intersection fractions of a WGS84 geo-polygon with EPSG:3857 tiles.
+    Performs all operations natively within the flat EPSG:3857 projection space
+    to completely eliminate distortion errors across all latitudes.
+    """
+    # 1. Establish the fixed global EPSG:3857 constraints
+    # Maximum extent of Web Mercator projection axis in meters
+    MAX_EXTENT = 20037508.342789244 
+    INITIAL_RESOLUTION = MAX_EXTENT * 2.0
+    
+    tiles_per_axis = 2**zoom
+    tile_size_meters = INITIAL_RESOLUTION / tiles_per_axis
+
+    projected_coords = []
+    # Unpack explicitly as [longitude, latitude] -> [X, Y]
+    for lon, lat in polygon_coords:
+        if lat < -85.00 or lat > 85.00:
+            raise ValueError("out of valid latitude range [-85.0, 85,0]")
+
+        # we are going from LAT/LON to EPSG:3857 CRS
+        projected_coords.append(_wgs84_to_epsg3857(lon, lat))
+
+
+    # @todo check bounds and raise error
+    raw_polygon =  Polygon(projected_coords)
+    target_polygon = orient(raw_polygon, sign=1.0)
+    # Fail fast if the polygon geometry is structurally invalid
+    if not target_polygon.is_valid:
+        raise ValueError(
+            "The provided polygon is topologically invalid (e.g., contains "
+            "self-intersections, spikes, or open rings)."
+        )
+    
+    p_min_x, p_min_y, p_max_x, p_max_y = target_polygon.bounds
+    
+    # 3. Direct grid index calculation from projected bounds
+    # Shift origin from bottom-left (meters) to top-left (standard XYZ tiling)
+    start_x_idx = int((p_min_x + MAX_EXTENT) // tile_size_meters)
+    end_x_idx = int((p_max_x + MAX_EXTENT) // tile_size_meters)
+    
+    # Y index is inverted: index 0 starts at +MAX_EXTENT (North) and goes down
+    start_y_idx = int((MAX_EXTENT - p_max_y) // tile_size_meters)
+    end_y_idx = int((MAX_EXTENT - p_min_y) // tile_size_meters)
+    
+    # @todo Handle the edge boundary cases 
+    tiles = []
+    
+    # 4. Iterate strictly within the resolved grid spatial window
+    for y_idx in range(start_y_idx, end_y_idx + 1):
+        tile_max_y = MAX_EXTENT - (y_idx * tile_size_meters)
+        tile_min_y = tile_max_y - tile_size_meters
+        
+        for x_idx in range(start_x_idx, end_x_idx + 1):
+            tile_min_x = -MAX_EXTENT + (x_idx * tile_size_meters)
+            tile_max_x = tile_min_x + tile_size_meters
+            
+            # Construct tile directly as a flat meter-based Cartesian box
+            tile_box = box(tile_min_x, tile_min_y, tile_max_x, tile_max_y)
+            
+            # 5. Evaluate spatial intersection inside EPSG:3857 space
+            if target_polygon.intersects(tile_box):
+                intersection_geom = target_polygon.intersection(tile_box)
+                # Fraction represents how much of the square tile is covered
+                tile_area = tile_box.area
+                fraction = intersection_geom.area / tile_area if tile_area > 0 else 0.0
+                
+                # Inverse project corners and centroids back to WGS84
+                min_lon, min_lat = _epsg3857_to_wgs84(tile_min_x, tile_min_y)
+                max_lon, max_lat = _epsg3857_to_wgs84(tile_max_x, tile_max_y)
+                
+                c_x = tile_min_x + (tile_size_meters / 2.0)
+                c_y = tile_min_y + (tile_size_meters / 2.0)
+                c_lon, c_lat = _epsg3857_to_wgs84(c_x, c_y)
+                
+                tiles.append(WebMapTile(
+                    zoom=zoom,
+                    x_index=x_idx,
+                    y_index=y_idx,
+                    min_lon=round(min_lon, 7),
+                    min_lat=round(min_lat, 7),
+                    max_lon=round(max_lon, 7),
+                    max_lat=round(max_lat, 7),
                     centroid_lon=round(c_lon, 7),
                     centroid_lat=round(c_lat, 7),
                     intersection_fraction=round(fraction, 4)
@@ -367,7 +512,7 @@ def _create_polygon_computation(conn: psycopg.Connection, polygon_id, computatio
             raise e
 
 
-def _create_geo_tile(conn: psycopg.Connection, tile: MapTile) -> int:
+def _create_geo_tile(conn: psycopg.Connection, tile: WebMapTile) -> int:
     """Finds or creates a tile in the geo_tiles table. """
 
     with conn.cursor() as cur:
@@ -495,7 +640,7 @@ def link_computation_to_aoi(computation_name: str, aoi_name: str) -> int:
             raw_coordinates = polygon_detail.geometry["coordinates"]
             aoi_coordinates = raw_coordinates[0]
             logger.info(f"AOI polygon coordinates are {aoi_coordinates}")
-            aoi_tiles = _get_map_tiles(aoi_coordinates, computation_detail.zoom_level)
+            aoi_tiles = _get_local_tiles(aoi_coordinates, computation_detail.zoom_level)
 
             for tile in aoi_tiles:
                 logger.info(f"insert tile x: {tile.x}, y:{tile.y}, {tile.z}")
@@ -579,7 +724,7 @@ def show_polygon_tiles(polygon_file, zoom_level):
 
     raw_coordinates = geometry["coordinates"]
     coordinates = raw_coordinates[0]
-    tiles = _get_crs84_tiles(coordinates, zoom_level)
+    tiles = _get_web_map_tiles(coordinates, zoom_level)
     for tile in tiles:
         print(tile)
 
