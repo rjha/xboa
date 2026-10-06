@@ -5,10 +5,11 @@ import psycopg
 from pathlib import Path
 from dataclasses import dataclass
 from psycopg.errors import UniqueViolation
-
+import ee 
 from softmaxx.config import AppConfig, DatabaseConfig 
 from softmaxx.config import get_logger_config, get_database_config
-from softmaxx.geo.tiles import get_polygon_intersection_tiles, TileMatrix, WebMapTile
+import softmaxx.geo.tiles as geo_tiles 
+
 
 
 logger = logging.getLogger("main." + __name__)
@@ -200,7 +201,7 @@ def link_computation_to_aoi(computation_name: str, aoi_name: str) -> int:
             raw_coordinates = polygon_detail.geometry["coordinates"]
             aoi_coordinates = raw_coordinates[0]
             logger.info(f"AOI polygon coordinates are {aoi_coordinates}")
-            aoi_tiles = get_polygon_intersection_tiles(aoi_coordinates, computation_detail.zoom_level)
+            aoi_tiles = geo_tiles.get_polygon_intersection_tiles(aoi_coordinates, computation_detail.zoom_level)
 
             for tile in aoi_tiles:
                 logger.info(f"insert tile x: {tile.x}, y:{tile.y}, {tile.z}")
@@ -271,10 +272,18 @@ def start_worker():
     AppConfig.init_logging(log_file=log_config.log_file, log_level=log_config.log_level)
     
     logger.info(f"xboa sdk config loaded...")
-    tiles: list[WebMapTile]= get_polygon_intersection_tiles("polygon.json", 14, tile_matrix=TileMatrix.WEB_MAP)
+    min_zoom = geo_tiles.calculate_crs84_tile_zoom(10, 0.0, pixels_limit=10**6) 
+    print(f"min zoom is {min_zoom}")
+    tile_pixels = geo_tiles.get_crs84_tile_pixels(10, 0.0, 10)
+    print(f"tile pixels -> {tile_pixels}")
+
+    tiles: list[geo_tiles.WebMapTile]= geo_tiles.get_polygon_intersection_tiles("polygon.json", 14, tile_matrix=geo_tiles.TileMatrix.WEB_MAP)
     for tile in tiles:
         print(tile)
+        gee_rectangle:ee.Geometry.Rectangle  = geo_tiles.getcrs84_to_gee_region(tile)
 
+
+    #
     # add_aoi_polygon("bihta_block", "polygon.json")
     # add_computation("RAIN", 10)
     # link_computation_to_aoi("RAIN", "bihta_block")
