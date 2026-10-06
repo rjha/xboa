@@ -488,3 +488,69 @@ def crs84_to_gee_region(tile: CRS84Tile) -> ee.Geometry.Rectangle:
         proj='EPSG:4326',
         geodesic=False
     )
+
+
+def get_crs84_tile_pixels(s_comp: int, latitude: float,  tile_zoom:int = 0) -> int:
+    logger = logging.getLogger("main." + __name__)
+    # Convert latitude to radians and get cosine
+    cos_lat = math.cos(math.radians(latitude))
+    
+    # INPUT check for the poles (width is 0, so 0 pixels)
+    if cos_lat <= 0:
+        raise  ValueError(f"Bad input, latitude: {latitude}")
+
+    # calculate CRS84 tile details 
+    tile_span = 180 / (2**tile_zoom)
+    tile_width = 111350 * cos_lat * tile_span
+    tile_height = 111800 * tile_span
+    tile_pixels = (tile_width * tile_height) / (s_comp * s_comp)
+    logger.info(f"Tile width: {tile_width}, height: {tile_height}")
+    return int(tile_pixels)
+    
+   
+
+def calculate_crs84_tile_zoom(s_comp: int, latitude: float,  pixels_limit:int = 10**6) -> int:
+    """
+    Get the CRS84 GRID tile zoom that will match the constraints of computation 
+    resolution and pixels_limit. if s_comp value is low (higher resolution) then a 
+    smaller area will contain more pixels.
+
+    At z=0, the angular spans for both longitude and latitude is 180 degrees. 
+    The Δ(latitude) is 111694 meters/degree at poles and 110574 at equator. 
+    The Δ(longitude) is 111320 x cos(|φ(min)|)
+    We use values of 111850 for latitude meters/degree and 111350 for longitude. 
+
+    pixels in a tile = (tile_width x tile_height) / (s_comp x s_comp)
+    since, at every zoom, the tile span is reduced by 2^z , the area is reduced by 
+    2^z x 2^z = 2 ^2z. [ pixel_z x 2^2z = pixel_z0 ] 
+    Hence 2^2z >= pixel_z0 / pixel_limit 
+    Taking logarithms, 
+    z >= [log(pixel_z0 / pixel_limit)] / [2 * log(2)]
+
+    """
+    logger = logging.getLogger("main." + __name__)
+    # Convert latitude to radians and get cosine
+    cos_lat = math.cos(math.radians(latitude))
+    
+    # INPUT check for the poles (width is 0, so 0 pixels)
+    if cos_lat <= 0:
+        raise  ValueError(f"Bad input, latitude: {latitude}")
+    
+    # Calculate physical tile dimensions at zoom_0
+    tile_z0_width = 180 * 111350 * cos_lat
+    tile_z0_height = 180 * 111800
+    
+    # Find the pixel_z0 / pixel_z, write pixel_limits for pixel_z
+    pixel_scale = (tile_z0_width * tile_z0_height) / (s_comp * s_comp * pixels_limit)
+    logger.info(f"CRS84 pixel scale: {pixel_scale}")
+    
+    # Solve for z: 2**2z >= pixel_scale => z >= log(pixel_scale) / (2 * log(2))
+    # If the scale is <= 1, zoom level 0 scale works.
+    z_float = 0.0 
+    if pixel_scale >= 1:
+        z_float = math.log(pixel_scale) / (2 * math.log(2))
+    
+    # Find the ceiling of float z
+    logger.info(f"CRS84 tile matching zoom: {z_float}")
+    return math.ceil(z_float)
+
