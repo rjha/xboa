@@ -22,6 +22,13 @@ class WebMapTile:
     centroid_lon: float
     centroid_lat: float
     intersection_fraction: float
+
+    @property
+    def bbox(self) -> list[float]:
+        """Returns the bounding box as a flat list: [west, south, east, north]"""
+        return [self.min_lon, self.min_lat, self.max_lon, self.max_lat]
+
+
     def __str__(self) -> str:
         return (
             f"MapTile(Z={self.zoom}, X={self.x_index}, Y={self.y_index}, "
@@ -45,6 +52,11 @@ class CRS84Tile:
     # Intersection metrics
     intersection_fraction: float
 
+    @property
+    def bbox(self) -> list[float]:
+        """Returns the bounding box as a flat list: [west, south, east, north]"""
+        return [self.min_lon, self.min_lat, self.max_lon, self.max_lat]
+    
     def __str__(self) -> str:
         """Returns a scannable, human-readable summary of the tile."""
         return (
