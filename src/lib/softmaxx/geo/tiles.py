@@ -502,24 +502,6 @@ def crs84_to_gee_region(tile: CRS84Tile) -> ee.Geometry.Rectangle:
     )
 
 
-def get_crs84_tile_pixels(s_comp: int, latitude: float,  tile_zoom:int = 0) -> int:
-    logger = logging.getLogger("main." + __name__)
-    # Convert latitude to radians and get cosine
-    cos_lat = math.cos(math.radians(latitude))
-    
-    # INPUT check for the poles (width is 0, so 0 pixels)
-    if cos_lat <= 0:
-        raise  ValueError(f"Bad input, latitude: {latitude}")
-
-    # calculate CRS84 tile details 
-    tile_span = 180 / (2**tile_zoom)
-    tile_width = 111350 * cos_lat * tile_span
-    tile_height = 111800 * tile_span
-    tile_pixels = (tile_width * tile_height) / (s_comp * s_comp)
-    logger.info(f"Tile width: {tile_width}, height: {tile_height}")
-    return int(tile_pixels)
-    
-   
 
 def calculate_crs84_tile_zoom(s_comp: int, latitude: float,  pixels_limit:int = 10**6) -> int:
     """
@@ -566,3 +548,64 @@ def calculate_crs84_tile_zoom(s_comp: int, latitude: float,  pixels_limit:int = 
     logger.info(f"CRS84 tile matching zoom: {z_float}")
     return math.ceil(z_float)
 
+
+def get_crs84_tile_pixels(s_comp: int, latitude: float,  tile_zoom:int = 0) -> int:
+    logger = logging.getLogger("main." + __name__)
+    # Convert latitude to radians and get cosine
+    cos_lat = math.cos(math.radians(latitude))
+    
+    # INPUT check for the poles (width is 0, so 0 pixels)
+    if cos_lat <= 0:
+        raise  ValueError(f"Bad input, latitude: {latitude}")
+
+    # calculate CRS84 tile details 
+    tile_span = 180 / (2**tile_zoom)
+    tile_width = 111350 * cos_lat * tile_span
+    tile_height = 111800 * tile_span
+    tile_pixels = (tile_width * tile_height) / (s_comp * s_comp)
+    logger.info(f"Tile width: {tile_width}, height: {tile_height}")
+    return int(tile_pixels)
+    
+
+def calculate_web_map_tile_zoom(s_comp: int, latitude: float,  pixels_limit:int = 10**6) -> int:
+    """
+    Get the EPSG:3857 GRID tile zoom that will match the constraints of computation 
+    resolution and pixels_limit. if s_comp value is low (higher resolution) then a 
+    smaller area will contain more pixels.
+
+    zoom = 0, area = c_equator x c_equator 
+    zoom = z, area = c_equator x c_equator x (1/2^z) x (1/2^z)
+    zoom = z, GEE pixels = c_equator x c_equator x (1/2^z) x (1/2^z) x 1/s_comp x 1/s_comp
+    pixels_limit = pixels_on_side x pixels_on_side
+    =>  c_equator / [2^z x s_comp] * c_equator / [2^z x s_comp] <= pixels_on_side^2
+    => c_equator / [2^z x s_comp] <= pixels_on_side 
+    => c_equator / [ s_comp x pixels_on_side ] <= 2^z 
+    OR 2^z >= c_equator / [ s_comp x pixels_on_side ]
+    OR z >= ln(c_equator / [ s_comp x pixels_on_side]) / ln(2)
+
+    """
+    logger = logging.getLogger("main." + __name__)
+    # Convert latitude to radians and get cosine
+    cos_lat = math.cos(math.radians(latitude))
+    
+    # INPUT check for the poles (width is 0, so 0 pixels)
+    if cos_lat <= 0:
+        raise  ValueError(f"Bad input, latitude: {latitude}")
+
+    c_equator = 40075016.68  
+    num_pixel_on_side =  int(math.sqrt(pixels_limit))
+    logger.info(f"number of pixels to cover tile side, {num_pixel_on_side}")
+
+    z_float = math.log((c_equator * cos_lat) / (s_comp * num_pixel_on_side))
+    z_float = z_float / math.log(2)
+    logger.info(f"Matching zoom float: {z_float}")
+    return math.ceil(z_float)
+
+
+
+def get_web_map_tile_pixels(s_comp: int,  tile_zoom:int = 0) -> int:
+    logger = logging.getLogger("main." + __name__)
+    c_equator = 40075016.68
+    tile_side_pixels = int(c_equator / (s_comp * (2** tile_zoom)))
+    logger.info(f"pixels on one tile side: {tile_side_pixels}")
+    return tile_side_pixels * tile_side_pixels
