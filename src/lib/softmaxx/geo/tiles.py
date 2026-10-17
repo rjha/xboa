@@ -507,7 +507,8 @@ def calculate_crs84_tile_zoom(s_comp: int, latitude: float,  pixels_limit:int = 
     """
     Get the CRS84 GRID tile zoom that will match the constraints of computation 
     resolution and pixels_limit. if s_comp value is low (higher resolution) then a 
-    smaller area will contain more pixels.
+    smaller area will contain more pixels. This calculation is done for GEE raster 
+    data pixels and not display pixels.
 
     At z=0, the angular spans for both longitude and latitude is 180 degrees. 
     The Δ(latitude) is 111694 meters/degree at poles and 110574 at equator. 
@@ -545,7 +546,7 @@ def calculate_crs84_tile_zoom(s_comp: int, latitude: float,  pixels_limit:int = 
         z_float = math.log(pixel_scale) / (2 * math.log(2))
     
     # Find the ceiling of float z
-    logger.info(f"CRS84 tile matching zoom: {z_float}")
+    logger.info(f"Minimmun tile zoom for data: {z_float}")
     return math.ceil(z_float)
 
 
@@ -567,7 +568,8 @@ def get_crs84_tile_pixels(s_comp: int, latitude: float,  tile_zoom:int = 0) -> i
     return int(tile_pixels)
     
 
-def calculate_web_map_tile_zoom(s_comp: int, latitude: float,  pixels_limit:int = 10**6) -> int:
+
+def calculate_map_tile_zoom(s_comp: int, latitude: float,  pixels_limit:int = 10**6) -> int:
     """
     Get the EPSG:3857 GRID tile zoom that will match the constraints of computation 
     resolution and pixels_limit. if s_comp value is low (higher resolution) then a 
@@ -576,12 +578,12 @@ def calculate_web_map_tile_zoom(s_comp: int, latitude: float,  pixels_limit:int 
     zoom = 0, area = c_equator x c_equator 
     zoom = z, area = c_equator x c_equator x (1/2^z) x (1/2^z)
     zoom = z, GEE pixels = c_equator x c_equator x (1/2^z) x (1/2^z) x 1/s_comp x 1/s_comp
-    pixels_limit = pixels_on_side x pixels_on_side
-    =>  c_equator / [2^z x s_comp] * c_equator / [2^z x s_comp] <= pixels_on_side^2
-    => c_equator / [2^z x s_comp] <= pixels_on_side 
-    => c_equator / [ s_comp x pixels_on_side ] <= 2^z 
-    OR 2^z >= c_equator / [ s_comp x pixels_on_side ]
-    OR z >= ln(c_equator / [ s_comp x pixels_on_side]) / ln(2)
+    pixels_limit = edge_pixels x edge_pixels
+    =>  c_equator / [2^z x s_comp] * c_equator / [2^z x s_comp] <= edge_pixels^2
+    => c_equator / [2^z x s_comp] <= edge_pixels 
+    => c_equator / [ s_comp x edge_pixels ] <= 2^z 
+    OR 2^z >= c_equator / [ s_comp x edge_pixels ]
+    OR z >= ln(c_equator / [ s_comp x edge_pixels]) / ln(2)
 
     """
     logger = logging.getLogger("main." + __name__)
@@ -593,19 +595,26 @@ def calculate_web_map_tile_zoom(s_comp: int, latitude: float,  pixels_limit:int 
         raise  ValueError(f"Bad input, latitude: {latitude}")
 
     c_equator = 40075016.68  
-    num_pixel_on_side =  int(math.sqrt(pixels_limit))
-    logger.info(f"number of pixels to cover tile side, {num_pixel_on_side}")
+    tile_edge_pixels =  int(math.sqrt(pixels_limit))
+    logger.info(f"Tile edge pixels: {tile_edge_pixels}")
 
-    z_float = math.log((c_equator * cos_lat) / (s_comp * num_pixel_on_side))
+    z_float = math.log((c_equator * cos_lat) / (s_comp * tile_edge_pixels))
     z_float = z_float / math.log(2)
-    logger.info(f"Matching zoom float: {z_float}")
-    return math.ceil(z_float)
+    logger.info(f"Minimum tile zoom for data: {z_float}")
+    tile_zoom = math.ceil(z_float)
+    # At this zoom, the data resolution should be higher than 
+    # display resolution
+    tile_pixels = get_map_tile_pixels(s_comp=s_comp, tile_zoom=tile_zoom)
+    if tile_pixels < 65536:
+        raise ValueError(f"tile pixels: {tile_pixels} cannot be less than 65536")
+    
+    return tile_zoom
 
 
 
-def get_web_map_tile_pixels(s_comp: int,  tile_zoom:int = 0) -> int:
+def get_map_tile_pixels(s_comp: int,  tile_zoom:int = 0) -> int:
     logger = logging.getLogger("main." + __name__)
     c_equator = 40075016.68
-    tile_side_pixels = int(c_equator / (s_comp * (2** tile_zoom)))
-    logger.info(f"pixels on one tile side: {tile_side_pixels}")
-    return tile_side_pixels * tile_side_pixels
+    edge_pixels = int(c_equator / (s_comp * (2** tile_zoom)))
+    logger.info(f"Tile edge pixels: {edge_pixels}")
+    return edge_pixels * edge_pixels
