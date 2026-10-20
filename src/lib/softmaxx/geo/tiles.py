@@ -72,47 +72,7 @@ class TileMatrix(Enum):
     LOCAL = "LOCAL"
     CRS84 = "CRS84"
 
-# Constants for Web Mercator (EPSG:3857) projection math
-# EARTH_RADIUS = 6378137.0
-# ORIGIN_SHIFT = math.pi * EARTH_RADIUS  # ~20037508.34 meters
 
-
-def _pack_map_tile(x: int, y: int, z: int) -> int:
-    """Packs X, Y, and Z tile coordinates into a single 64-bit integer ID.
-
-    Bit-Packing layout allocation:
-    - Z: bits 0-5    (allows zoom levels 0 to 63)
-    - X: bits 6-34   (allows X grid indices up to 536,870,911)
-    - Y: bits 35-63  (allows Y grid indices up to 536,870,911)
-
-    Returns:
-        int: Unique 64-bit packed integer ID
-    """
-    # 1. Cast inputs to integers to guarantee correct bitwise execution
-    x_val = int(x)
-    y_val = int(y)
-    z_val = int(z)
-
-    # 2. Shift components into their designated bit boundaries and combine them
-    packed_id = (y_val << 35) | (x_val << 6) | z_val
-    return packed_id
-
-
-def _unpack_map_tile(packed_id: int) -> tuple[int, int, int]:
-    """Decodes a 64-bit packed integer back into its original X, Y, and Z tile coordinates.
-    
-    Bit-Packing layout mapping:
-    - Z: bits 0-5    (mask 63)
-    - X: bits 6-34   (mask 536870911)
-    - Y: bits 35-63  (mask 536870911)
-    
-    Returns:
-        tuple: (x, y, z) as pure integers
-    """
-    z = packed_id & 63
-    x = (packed_id >> 6) & 536870911
-    y = (packed_id >> 35) & 536870911
-    return x, y, z
 
 
 def _wgs84_meters_per_degree(lat_degree:float)-> tuple[float, float]:
@@ -228,7 +188,6 @@ def _get_local_tiles(polygon_coords: list[list[float]], zoom: int) -> list[WebMa
                     area_fraction = round(area_fraction, 4)
 
                     if area_fraction > 0.0001:
-                        packed_id = _pack_map_tile(int(x), int(y), int(zoom))
                         tiles.append(WebMapTile(
                             x_index=int(x), 
                             y_index=int(y), 
