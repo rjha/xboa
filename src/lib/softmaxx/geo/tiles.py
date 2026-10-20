@@ -72,6 +72,170 @@ class TileMatrix(Enum):
     LOCAL = "LOCAL"
     CRS84 = "CRS84"
 
+@dataclass(frozen=True)
+class TileCoords:
+    x: int
+    y: int
+    z: int
+
+@dataclass(frozen=True)
+class PackedTile:
+    packed_id: int
+    coords: TileCoords
+
+@dataclass(frozen=True)
+class TileBounds:
+    min_lng: float
+    min_lat: float
+    max_lng: float
+    max_lat: float
+
+@dataclass(frozen=True)
+class DBQueryRange:
+    start_packed_id: int
+    end_packed_id: int
+
+@dataclass(frozen=True)
+class CardinalNeighbors:
+    north_packed_id: int
+    south_packed_id: int
+    east_packed_id: int
+    west_packed_id: int
+
+# Bitmask Constants for 6-bit Zoom Allocation
+ZOOM_MASK = 0x3F  # Binary: 111111
+
+def _interleave_32bit(val: int) -> int:
+    """Spreads 32 bits out so there is an empty gap between every bit."""
+    val = (val | (val << 16)) & 0x0000FFFF0000FFFF
+    val = (val | (val << 8))  & 0x00FF00FF00FF00FF
+    val = (val | (val << 4))  & 0x0F0F0F0F0F0F0F0F
+    val = (val | (val << 2))  & 0x3333333333333333
+    val = (val | (val << 1))  & 0x5555555555555555
+    return val
+
+def _deinterleave_32bit(val: int) -> int:
+    """Collapses alternating bits back into a dense 32-bit integer."""
+    val = val & 0x5555555555555555
+    val = (val | (val >> 1))  & 0x3333333333333333
+    val = (val | (val >> 2))  & 0x0F0F0F0F0F0F0F0F
+    val = (val | (val >> 4))  & 0x00FF00FF00FF00FF
+    val = (val | (val >> 8))  & 0x0000FFFF0000FFFF
+    val = (val | (val >> 16)) & 0x00000000FFFFFFFF
+    return val
+
+def _pack_morton(x: int, y: int, z: int) -> int:
+    """Combines X, Y, and Z into a true bit-interleaved 64-bit integer."""
+    morton = (_interleave_32bit(y) << 1) | _interleave_32bit(x)
+    return (morton << 6) | z
+
+
+def encode_crs84_tile(min_lng: float, max_lat: float, z: int) -> PackedTile:
+    """Converts a CRS84 (EPSG:4326) coordinate to a packed integer ID."""
+    # Longitude maps across 2^(z+1) tiles horizontally
+    total_x_tiles = 1 << (z + 1)
+    x = int(((min_lng + 180.0) / 360.0) * total_x_tiles)
+    
+    # Latitude maps across 2^z tiles vertically (increasing downward from North Pole)
+    total_y_tiles = 1 << z
+    y = int(((90.0 - max_lat) / 180.0) * total_y_tiles)
+    
+    # Guard bounds for extreme edge configurations
+    x = max(0, min(x, total_x_tiles - 1))
+    y = max(0, min(y, total_y_tiles - 1))
+    
+    packed_id = _pack_morton(x, y, z)
+    return PackedTile(packed_id=packed_id, coords=TileCoords(x=x, y=y, z=z))
+
+
+def encode_web_map_tile(x: int, y: int, z: int) -> PackedTile:
+    """Packs Web Mercator (EPSG:3857) integer grid coordinates into a 64-bit ID."""
+    # Ensure inputs don't breach bounds for the given zoom level
+    total_tiles = 1 << z
+    safe_x = max(0, min(int(x), total_tiles - 1))
+    safe_y = max(0, min(int(y), total_tiles - 1))
+    
+    # Generate the Morton interleaved bit-shifted key
+    packed_id = _pack_morton(safe_x, safe_y, z)
+    
+    return PackedTile(
+        packed_id=packed_id, 
+        coords=TileCoords(x=safe_x, y=safe_y, z=z)
+    )
+
+def decode_packed_id(packed_id: int) -> TileCoords:
+    """Extracts X, Y, and Z cleanly from a packed 64-bit integer ID."""
+    z = packed_id & ZOOM_MASK
+    morton = packed_id >> 6
+    
+    x = _deinterleave_32bit(morton)
+    y = _deinterleave_32bit(morton >> 1)
+    return TileCoords(x=x, y=y, z=z)
+
+
+def crs84_tile_to_bounds(coords: TileCoords) -> TileBounds:
+    """Calculates the geographic CRS84 bounding box from tile grid coordinates."""
+    total_x_tiles = 1 << (coords.z + 1)
+    total_y_tiles = 1 << coords.z
+    
+    min_lng = (coords.x / total_x_tiles) * 360.0 - 180.0
+    max_lng = ((coords.x + 1) / total_x_tiles) * 360.0 - 180.0
+    
+    max_lat = 90.0 - (coords.y / total_y_tiles) * 180.0
+    min_lat = 90.0 - ((coords.y + 1) / total_y_tiles) * 180.0
+    return TileBounds(min_lng=min_lng, min_lat=min_lat, max_lng=max_lng, max_lat=max_lat)
+
+
+def get_ancestor(packed_id: int, steps_up: int) -> int:
+    """Instantly tracks up a layout tree to find parent/grandparent IDs."""
+    current_z = packed_id & ZOOM_MASK
+    target_z = current_z - steps_up
+    
+    if target_z < 0:
+        raise ValueError("Requested ancestor exceeds Zoom 0 boundary.")
+        
+    morton = packed_id >> 6
+    # Drop detail bits matching spatial branching steps
+    ancestor_morton = morton >> (2 * steps_up)
+    return (ancestor_morton << 6) | target_z
+
+
+def get_descendant_range(packed_id: int, steps_down: int) -> DBQueryRange:
+    """Calculates the raw BETWEEN boundaries for an optimal sequential range query."""
+    current_z = packed_id & ZOOM_MASK
+    target_z = current_z + steps_down
+    
+    morton = packed_id >> 6
+    bit_shift_count = 2 * steps_down
+    
+    # Calculate boundaries by widening spatial footprint and appending new target Z
+    start_morton = morton << bit_shift_count
+    end_morton = start_morton | ((1 << bit_shift_count) - 1)
+    
+    return DBQueryRange(
+        start_packed_id=(start_morton << 6) | target_z,
+        end_packed_id=(end_morton << 6) | target_z
+    )
+
+
+def get_neighbors(packed_id: int) -> CardinalNeighbors:
+    """Calculates adjacent cardinal tiles at the identical zoom scale."""
+    coords = decode_packed_id(packed_id)
+    
+    # Bound limits depend on CRS standard, dynamically sizing thresholds
+    max_y = (1 << coords.z) - 1
+    max_x = (1 << (coords.z + 1)) - 1 # Defaults to CRS84 maximum width boundary
+    
+    # Compute relative offsets wrapped safely within edge limitations
+    n_y, s_y = max(0, coords.y - 1), min(max_y, coords.y + 1)
+    e_x, w_x = min(max_x, coords.x + 1), max(0, coords.x - 1)
+    
+    return CardinalNeighbors(
+        north_packed_id=_pack_morton(coords.x, n_y, coords.z),
+        south_packed_id=_pack_morton(coords.x, s_y, coords.z),
+        east_packed_id=_pack_morton(e_x, coords.y, coords.z),
+        west_packed_id=_pack_morton(w_x, coords.y, coords.z)
+    )
 
 
 
