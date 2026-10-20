@@ -503,24 +503,29 @@ def crs84_to_gee_region(tile: CRS84Tile) -> ee.Geometry.Rectangle:
 
 
 
-def calculate_crs84_tile_zoom(s_comp: int, latitude: float,  pixels_limit:int = 10**6) -> int:
+def calculate_crs84_tile_zoom(s_comp: int, latitude: float,  max_pixels:int = 10**6) -> int:
     """
     Get the CRS84 GRID tile zoom that will match the constraints of computation 
-    resolution and pixels_limit. if s_comp value is low (higher resolution) then a 
+    resolution and max_pixels. if s_comp value is low (higher resolution) then a 
     smaller area will contain more pixels. This calculation is done for GEE raster 
-    data pixels and not display pixels.
+    data pixels and not display pixels. max_pixels is the upper bound for GEE raster.
 
     At z=0, the angular spans for both longitude and latitude is 180 degrees. 
     The Δ(latitude) is 111694 meters/degree at poles and 110574 at equator. 
     The Δ(longitude) is 111320 x cos(|φ(min)|)
     We use values of 111850 for latitude meters/degree and 111350 for longitude. 
 
-    pixels in a tile = (tile_width x tile_height) / (s_comp x s_comp)
-    since, at every zoom, the tile span is reduced by 2^z , the area is reduced by 
-    2^z x 2^z = 2 ^2z. [ pixel_z x 2^2z = pixel_z0 ] 
-    Hence 2^2z >= pixel_z0 / pixel_limit 
-    Taking logarithms, 
-    z >= [log(pixel_z0 / pixel_limit)] / [2 * log(2)]
+    since, at every zoom, the tile span is reduced by 2^z , the area is reduced 
+    by 2^z x 2^z = 2^2z
+    tile_area (z=z) = tile_area (z=0) / 2^2z         - (A)
+    raster_pixels = tile_area (z=z) / s_comp^2       - (B)
+    
+    pixel_scale = raster_pixels / max_pixels <= 1
+    if pixel_scale is > 1 then we need to zoom-in. 
+    [tile_area(z=0) / (2^2z * s_comp^2)] <= max_pixels 
+
+    Re-arranging and taking logarithms, 
+    z >= ln[tile_area(z=0) / (s_comp^2 * max_pixels)] / [2 * ln(2)]
 
     """
     logger = logging.getLogger("main." + __name__)
@@ -534,12 +539,11 @@ def calculate_crs84_tile_zoom(s_comp: int, latitude: float,  pixels_limit:int = 
     # Calculate physical tile dimensions at zoom_0
     tile_z0_width = 180 * 111350 * cos_lat
     tile_z0_height = 180 * 111800
-    
-    # Find the pixel_z0 / pixel_z, write pixel_limits for pixel_z
-    pixel_scale = (tile_z0_width * tile_z0_height) / (s_comp * s_comp * pixels_limit)
+    tile_z0_pixels = (tile_z0_width * tile_z0_height) / (s_comp * s_comp)
+    pixel_scale = tile_z0_pixels / max_pixels
     logger.info(f"CRS84 pixel scale: {pixel_scale}")
     
-    # Solve for z: 2**2z >= pixel_scale => z >= log(pixel_scale) / (2 * log(2))
+    # Solve for z: 2^2z >= pixel_scale => z >= log(pixel_scale) / (2 * log(2))
     # If the scale is <= 1, zoom level 0 scale works.
     z_float = 0.0 
     if pixel_scale >= 1:
@@ -569,21 +573,24 @@ def get_crs84_tile_pixels(s_comp: int, latitude: float,  tile_zoom:int = 0) -> i
     
 
 
-def calculate_map_tile_zoom(s_comp: int, latitude: float,  pixels_limit:int = 10**6) -> int:
+def calculate_map_tile_zoom(s_comp: int, latitude: float,  max_pixels:int = 10**6) -> int:
     """
     Get the EPSG:3857 GRID tile zoom that will match the constraints of computation 
-    resolution and pixels_limit. if s_comp value is low (higher resolution) then a 
-    smaller area will contain more pixels.
+    resolution and max_pixels. if s_comp value is low (higher resolution) then a 
+    smaller area will contain more pixels. max_pixels is GEE raster pixels limit.
 
-    zoom = 0, area = c_equator x c_equator 
-    zoom = z, area = c_equator x c_equator x (1/2^z) x (1/2^z)
-    zoom = z, GEE pixels = c_equator x c_equator x (1/2^z) x (1/2^z) x 1/s_comp x 1/s_comp
-    pixels_limit = edge_pixels x edge_pixels
-    =>  c_equator / [2^z x s_comp] * c_equator / [2^z x s_comp] <= edge_pixels^2
-    => c_equator / [2^z x s_comp] <= edge_pixels 
-    => c_equator / [ s_comp x edge_pixels ] <= 2^z 
-    OR 2^z >= c_equator / [ s_comp x edge_pixels ]
-    OR z >= ln(c_equator / [ s_comp x edge_pixels]) / ln(2)
+    z= 0, area = c_equator x c_equator 
+    z= z, area = c_equator x c_equator x (1/2^z) x (1/2^z)
+    z= z, raster_pixels = [c_equator^2 ] / [2^2z x s_comp^2]
+    max_pixels = edge_pixels x edge_pixels
+
+    pixel_scale = raster_pixels / max_pixels <= 1
+    if pixel_scale is > 1 then we need to zoom-in. 
+
+    =>  [c_equator^2] / [2^2z x s_comp^2 x edge_pixels^2] <= 1
+    =>  Re-arranging, 2^z >= [c_equator / (s_comp x edge_pixels)]
+        Taking logarithms, 
+        z >= log[c_equator / (s_comp x edge_pixels)] / log(2)
 
     """
     logger = logging.getLogger("main." + __name__)
@@ -595,10 +602,10 @@ def calculate_map_tile_zoom(s_comp: int, latitude: float,  pixels_limit:int = 10
         raise  ValueError(f"Bad input, latitude: {latitude}")
 
     c_equator = 40075016.68  
-    tile_edge_pixels =  int(math.sqrt(pixels_limit))
-    logger.info(f"Tile edge pixels: {tile_edge_pixels}")
+    edge_pixels =  int(math.sqrt(max_pixels))
+    logger.info(f"Tile edge pixels: {edge_pixels}")
 
-    z_float = math.log((c_equator * cos_lat) / (s_comp * tile_edge_pixels))
+    z_float = math.log((c_equator * cos_lat) / (s_comp * edge_pixels)) 
     z_float = z_float / math.log(2)
     logger.info(f"Minimum tile zoom for data: {z_float}")
     tile_zoom = math.ceil(z_float)
