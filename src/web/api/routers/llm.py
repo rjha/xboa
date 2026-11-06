@@ -40,7 +40,7 @@ def get_llm_client() -> AsyncOpenAI:
         api_keys = AppConfig.get("api_keys")
         _client = AsyncOpenAI(
             base_url="https://inference.do-ai.run/v1/",
-            api_key=api_keys["QWEN3_32B_KEY"],
+            api_key=api_keys["DO_SONNET_055"],
             timeout=60.0,
         )
     return _client
@@ -55,7 +55,7 @@ async def event_generator(prompt: str, client: AsyncOpenAI) -> AsyncGenerator[st
 
     try:
         response = await client.chat.completions.create(
-            model="alibaba-qwen3-32b",
+            model="anthropic-claude-sonnet-5.5",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=300,
             stream=True
