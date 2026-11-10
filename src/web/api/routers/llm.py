@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from openai import AsyncOpenAI
 import softmaxx.boxgpt.rag as box_rag
 import softmaxx.boxgpt.prompt as box_prompt
-from softmaxx.boxgpt.encoder import DOBGEM3Encoder
+from softmaxx.boxgpt.encoder import OpenAIBGEM3Encoder
 
 
 logger = logging.getLogger("xboa.fastapi.main." + __name__)
@@ -144,7 +144,7 @@ async def search_and_generate(request: Request, body: SearchRequest):
     ctx = request.app.state.ctx
     
     # Instantiate online text encoder using the blocking client
-    encoder = DOBGEM3Encoder(api_client=ctx.do_blocking_client)
+    encoder = OpenAIBGEM3Encoder(api_client=ctx.do_blocking_client)
     mmr_chunks = box_rag.search_doc_chunks(
         db_string=ctx.db_string,
         text_encoder=encoder,
