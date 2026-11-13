@@ -1,0 +1,37 @@
+{
+  "single_dict": {
+    "id": 101,
+    "service": "auth-api",
+    "status": "healthy",
+    "latency_ms": 14.2,
+    "_internal_secret": "do-not-log"
+  },
+  "mappings": [
+    {"id": 101, "user": "alice", "role": "admin", "active": true},
+    {"id": 102, "user": "bob", "role": "viewer", "active": false}
+  ],
+  "list": [1, 2, 3],
+  "mixed_list": ["step-1", 42, true, {"nested_key": "nested_val"}],
+  "users": [
+    {
+      "user_id": 501,
+      "username": "charlie",
+      "_password_hash": "abc123xyz",
+      "profile": {
+        "department": "Engineering",
+        "location": "Bengaluru",
+        "_ssn": "999-00-1111"
+      }
+    },
+    {
+      "user_id": 502,
+      "username": "diana",
+      "_password_hash": "def456uvw",
+      "profile": {
+        "department": "Product",
+        "location": "Mumbai",
+        "_ssn": "888-00-2222"
+      }
+    }
+  ]
+}
